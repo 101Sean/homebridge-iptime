@@ -62,32 +62,25 @@ class IpTimeMasterPlatform {
     }
 
     setupRouterAccessory() {
-        const accessoryUuid = uuid.generate('iptime-router-main');
+        const accessoryUuid = uuid.generate('iptime-router-satellite');
         const accessory = new this.api.platformAccessory(this.config.name || 'ipTIME Router', accessoryUuid);
 
         accessory.category = 33;
+        this.satelliteService = accessory.getService(Service.WiFiSatellite) || accessory.addService(Service.WiFiSatellite, this.config.name);
+
+        this.satelliteService.getCharacteristic(Characteristic.WiFiSatelliteStatus)
+            .onGet(() => (this.isOnline ? 0 : 1));
+
         const infoService = accessory.getService(Service.AccessoryInformation);
         infoService
             .setCharacteristic(Characteristic.Manufacturer, 'ipTIME')
             .setCharacteristic(Characteristic.Model, 'AX2004')
-            .setCharacteristic(Characteristic.SerialNumber, 'IPTIME-HOMEBRIDGE-01')
             .setCharacteristic(Characteristic.FirmwareRevision, '14.29.2');
-
-        this.routerService = accessory.getService(Service.WiFiRouter) || accessory.addService(Service.WiFiRouter, this.config.name);
-
-        this.routerService.getCharacteristic(Characteristic.ConfiguredName)
-            .onGet(() => this.config.name || 'ipTIME Router');
-
-        this.routerService.getCharacteristic(Characteristic.ManagedNetworkEnable)
-            .onGet(() => tlv.encode(0x01, 1).toString('base64'));
-
-        this.routerService.getCharacteristic(Characteristic.RouterStatus)
-            .onGet(() => (this.isOnline ? 0 : 1));
 
         const rebootService = accessory.getService("Reboot") || accessory.addService(Service.Switch, "Reboot", 'reboot-btn');
         rebootService.getCharacteristic(Characteristic.On).onSet(async (v) => {
             if (v) {
-                this.log.warn('⚠️ 재부팅 명령 전송');
+                this.log.warn('⚠️ 재부팅 실행');
                 await this.executeReboot();
                 setTimeout(() => rebootService.updateCharacteristic(Characteristic.On, false), 2000);
             }
@@ -106,11 +99,11 @@ class IpTimeMasterPlatform {
                 headers: { 'Cookie': `efm_session_id=${this.sessionId}` }
             });
             this.isOnline = resp.body.includes('연결됨') || !resp.body.includes('0.0.0.0');
-            this.routerService.updateCharacteristic(Characteristic.RouterStatus, this.isOnline ? 0 : 1);
+            this.satelliteService.updateCharacteristic(Characteristic.WiFiSatelliteStatus, this.isOnline ? 0 : 1);
             this.log.info(`📊 온라인 여부: ${this.isOnline}`);
         } catch (e) {
-            this.sessionId = null;
             this.isOnline = false;
+            this.satelliteService.updateCharacteristic(Characteristic.WiFiSatelliteStatus, 1);
         }
     }
 
