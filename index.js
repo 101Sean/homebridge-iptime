@@ -93,7 +93,7 @@ class IpTimeMasterPlatform {
         const uuid = UUID.generate('iptime-router-main');
         const accessory = new this.api.platformAccessory(this.config.name || 'iptime 공유기', uuid);
 
-        this.routerService = accessory.addService(Service.ROUTER, this.config.name);
+        this.routerService = accessory.addService(Service.WiFiRouter, this.config.name);
 
         const rebootService = accessory.addService(Service.Switch, "Reboot", 'reboot-btn');
         rebootService.getCharacteristic(Characteristic.On)
