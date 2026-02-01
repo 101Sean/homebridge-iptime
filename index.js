@@ -21,7 +21,6 @@ class IpTimeMasterPlatform {
         this.isOnline = false;
 
         this.api.on('didFinishLaunching', () => {
-            this.log.info(`📡 정식 ROUTER(33) 카테고리로 액세서리를 등록합니다.`);
             this.setupRouterAccessory();
             this.updateStatus();
             setInterval(() => this.updateStatus(), (config.interval || 5) * 60 * 1000);
@@ -64,19 +63,23 @@ class IpTimeMasterPlatform {
 
     setupRouterAccessory() {
         const accessoryUuid = uuid.generate('iptime-router-main');
-        const accessory = new this.api.platformAccessory(this.config.name || 'iptime 공유기', accessoryUuid);
+        const accessory = new this.api.platformAccessory(this.config.name || 'ipTIME Router', accessoryUuid);
 
         accessory.category = 33;
+        const infoService = accessory.getService(Service.AccessoryInformation);
+        infoService
+            .setCharacteristic(Characteristic.Manufacturer, 'ipTIME')
+            .setCharacteristic(Characteristic.Model, 'AX2004')
+            .setCharacteristic(Characteristic.SerialNumber, 'IPTIME-HOMEBRIDGE-01')
+            .setCharacteristic(Characteristic.FirmwareRevision, '14.29.2');
+
         this.routerService = accessory.getService(Service.WiFiRouter) || accessory.addService(Service.WiFiRouter, this.config.name);
 
         this.routerService.getCharacteristic(Characteristic.ConfiguredName)
-            .onGet(() => this.config.name || 'iptime 공유기');
+            .onGet(() => this.config.name || 'ipTIME Router');
 
         this.routerService.getCharacteristic(Characteristic.ManagedNetworkEnable)
-            .onGet(() => {
-                const encoded = tlv.encode(0x01, 1);
-                return encoded.toString('base64');
-            });
+            .onGet(() => tlv.encode(0x01, 1).toString('base64'));
 
         this.routerService.getCharacteristic(Characteristic.RouterStatus)
             .onGet(() => (this.isOnline ? 0 : 1));
@@ -84,7 +87,7 @@ class IpTimeMasterPlatform {
         const rebootService = accessory.getService("Reboot") || accessory.addService(Service.Switch, "Reboot", 'reboot-btn');
         rebootService.getCharacteristic(Characteristic.On).onSet(async (v) => {
             if (v) {
-                this.log.warn('⚠️ 공유기 재부팅 명령 실행');
+                this.log.warn('⚠️ 재부팅 명령 전송');
                 await this.executeReboot();
                 setTimeout(() => rebootService.updateCharacteristic(Characteristic.On, false), 2000);
             }
