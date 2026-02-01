@@ -1,0 +1,38 @@
+{
+  "name": "homebridge-iptime",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "engines": {
+    "homebridge": ">=1.0.0",
+    "node": ">=14.17.0"
+  },
+  "keywords": [
+    "homebridge",
+    "homebridge-plugin",
+    "homebridge-platform",
+    "iptime",
+    "router"
+  ],
+  "dependencies": {
+    "axios": "^1.0.0",
+    "cheerio": "^1.0.0",
+    "ssh2": "^1.11.0"
+  },
+  "peerDependencies": {
+    "hap-nodejs": ">=0.13.1",
+    "homebridge": ">=1.5.0"
+  },
+  "homebridge": {
+    "platforms": [
+      {
+        "platform": "IptimeRouter",
+        "name": "ipTIME Router",
+        "url": "http://192.168.1.100:8080",
+        "username": "admin",
+        "password": "password",
+        "interval": 10
+      }
+    ]
+  }
+}
