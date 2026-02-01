@@ -2,12 +2,13 @@ const http = require('http');
 const https = require('https');
 const { URL } = require('url');
 
-let Service, Characteristic, UUID;
+let Service, Characteristic, uuid, tlv;
 
 module.exports = api => {
     Service = api.hap.Service;
     Characteristic = api.hap.Characteristic;
-    UUID = api.hap.uuid;
+    uuid = api.hap.uuid;
+    tlv = api.hap.tlv;
     api.registerPlatform('IpTimeMasterControl', 'IpTimeMasterControl', IpTimeMasterPlatform);
 };
 
@@ -17,15 +18,13 @@ class IpTimeMasterPlatform {
         this.config = config;
         this.api = api;
         this.sessionId = null;
-
-        this.refreshIntervalMin = config.interval || 5;
-        this.refreshIntervalMs = this.refreshIntervalMin * 60 * 1000;
+        this.isOnline = false;
 
         this.api.on('didFinishLaunching', () => {
-            this.log.info(`🚀 Router 모니터링 시작 (주기: ${this.refreshIntervalMin}분)`);
+            this.log.info(`📡 정식 ROUTER(33) 카테고리로 액세서리를 등록합니다.`);
             this.setupRouterAccessory();
             this.updateStatus();
-            setInterval(() => this.updateStatus(), this.refreshIntervalMs);
+            setInterval(() => this.updateStatus(), (config.interval || 5) * 60 * 1000);
         });
     }
 
@@ -36,7 +35,7 @@ class IpTimeMasterPlatform {
             const req = lib.request(options, res => {
                 let data = '';
                 res.on('data', chunk => data += chunk);
-                res.on('end', () => resolve({ statusCode: res.statusCode, headers: res.headers, body: data }));
+                res.on('end', () => resolve({ body: data }));
             });
             req.on('error', err => reject(err));
             if (body) req.write(body);
@@ -46,64 +45,50 @@ class IpTimeMasterPlatform {
 
     async login() {
         try {
-            const { url: domain, username, password } = this.config;
-            const url = new URL(domain);
-            const origin = url.origin;
-            const host = url.host;
-
-            const loginPath = `/sess-bin/login_handler.cgi`;
+            const url = new URL(this.config.url);
             const loginBody = new URLSearchParams({
-                username: username,
-                passwd: password,
-                init_status: 1,
-                captcha_on: 0,
-                default_passwd: 'admin',
-                Referer: `${origin}/sess-bin/login_session.cgi?noauto=1`
+                username: this.config.username, passwd: this.config.password,
+                init_status: 1, captcha_on: 0, default_passwd: 'admin',
+                Referer: `${url.origin}/sess-bin/login_session.cgi?noauto=1`
             }).toString();
-
             const resp = await this.httpRequest({
-                protocol: url.protocol,
-                hostname: url.hostname,
-                port: url.port || (url.protocol === 'https:' ? 443 : 80),
-                method: 'POST',
-                path: loginPath,
-                headers: {
-                    'Accept': 'text/html',
-                    'Host': host,
-                    'Connection': 'close',
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Content-Length': Buffer.byteLength(loginBody)
-                }
+                protocol: url.protocol, hostname: url.hostname, port: url.port,
+                method: 'POST', path: '/sess-bin/login_handler.cgi',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
             }, loginBody);
-
             const match = resp.body.match(/setCookie\('([^']+)'\)/);
-            if (match) {
-                this.sessionId = match[1].trim();
-                this.log.info(`🔑 세션 획득 성공: ${this.sessionId}`);
-                return true;
-            }
-            throw new Error('setCookie를 찾을 수 없음');
-        } catch (e) {
-            this.log.error(`❌ 로그인 실패: ${e.message}`);
-            return false;
-        }
+            if (match) { this.sessionId = match[1].trim(); return true; }
+        } catch (e) { return false; }
+        return false;
     }
 
     setupRouterAccessory() {
-        const uuid = UUID.generate('iptime-router-main');
-        const accessory = new this.api.platformAccessory(this.config.name || 'iptime 공유기', uuid);
+        const accessoryUuid = uuid.generate('iptime-router-main');
+        const accessory = new this.api.platformAccessory(this.config.name || 'iptime 공유기', accessoryUuid);
 
-        this.routerService = accessory.addService(Service.WiFiRouter, this.config.name);
+        accessory.category = 33;
+        this.routerService = accessory.getService(Service.WiFiRouter) || accessory.addService(Service.WiFiRouter, this.config.name);
 
-        const rebootService = accessory.addService(Service.Switch, "Reboot", 'reboot-btn');
-        rebootService.getCharacteristic(Characteristic.On)
-            .onSet(async (value) => {
-                if (value) {
-                    this.log.warn('⚠️ 공유기 재부팅 실행');
-                    await this.executeReboot();
-                    setTimeout(() => rebootService.updateCharacteristic(Characteristic.On, false), 2000);
-                }
+        this.routerService.getCharacteristic(Characteristic.ConfiguredName)
+            .onGet(() => this.config.name || 'iptime 공유기');
+
+        this.routerService.getCharacteristic(Characteristic.ManagedNetworkEnable)
+            .onGet(() => {
+                const encoded = tlv.encode(0x01, 1);
+                return encoded.toString('base64');
             });
+
+        this.routerService.getCharacteristic(Characteristic.RouterStatus)
+            .onGet(() => (this.isOnline ? 0 : 1));
+
+        const rebootService = accessory.getService("Reboot") || accessory.addService(Service.Switch, "Reboot", 'reboot-btn');
+        rebootService.getCharacteristic(Characteristic.On).onSet(async (v) => {
+            if (v) {
+                this.log.warn('⚠️ 공유기 재부팅 명령 실행');
+                await this.executeReboot();
+                setTimeout(() => rebootService.updateCharacteristic(Characteristic.On, false), 2000);
+            }
+        });
 
         this.api.registerPlatformAccessories('IpTimeMasterControl', 'IpTimeMasterControl', [accessory]);
     }
@@ -112,62 +97,33 @@ class IpTimeMasterPlatform {
         try {
             if (!this.sessionId) await this.login();
             const url = new URL(this.config.url);
-
             const resp = await this.httpRequest({
-                protocol: url.protocol,
-                hostname: url.hostname,
-                port: url.port,
-                method: 'GET',
-                path: '/sess-bin/timepro.cgi?tmenu=iframe&smenu=system_info_status',
-                headers: {
-                    'Cookie': `efm_session_id=${this.sessionId}`,
-                    'Host': url.host
-                }
+                protocol: url.protocol, hostname: url.hostname, port: url.port,
+                method: 'GET', path: '/sess-bin/timepro.cgi?tmenu=iframe&smenu=system_info_status',
+                headers: { 'Cookie': `efm_session_id=${this.sessionId}` }
             });
-
-            const isOnline = resp.body.includes('연결됨') || !resp.body.includes('0.0.0.0');
-            this.routerService.updateCharacteristic(Characteristic.StatusActive, isOnline);
-            this.log.info(`📊 공유기 상태 업데이트: ${isOnline ? '온라인' : '오프라인'}`);
-
+            this.isOnline = resp.body.includes('연결됨') || !resp.body.includes('0.0.0.0');
+            this.routerService.updateCharacteristic(Characteristic.RouterStatus, this.isOnline ? 0 : 1);
+            this.log.info(`📊 온라인 여부: ${this.isOnline}`);
         } catch (e) {
-            this.log.error('🔄 상태 체크 실패, 세션 초기화');
             this.sessionId = null;
-            this.routerService.updateCharacteristic(Characteristic.StatusActive, false);
+            this.isOnline = false;
         }
     }
 
     async executeReboot() {
         try {
             const url = new URL(this.config.url);
-
-            const params = {
-                tmenu: 'iframe',
-                smenu: 'sysconf_misc',
-                act: "restart",
-                service: "restart",
-                restarth: 1
-            };
-
-            const body = new URLSearchParams(params).toString();
-
+            const body = new URLSearchParams({ tmenu: 'iframe', smenu: 'sysconf_misc', act: 'restart', service: 'restart', restarth: '1' }).toString();
             await this.httpRequest({
-                protocol: url.protocol,
-                hostname: url.hostname,
-                port: url.port,
-                method: 'POST',
-                path: '/sess-bin/timepro.cgi',
+                protocol: url.protocol, hostname: url.hostname, port: url.port,
+                method: 'POST', path: '/sess-bin/timepro.cgi',
                 headers: {
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                     'Content-Type': 'application/x-www-form-urlencoded',
                     'Cookie': `efm_session_id=${this.sessionId}`,
-                    'Host': url.host,
-                    'Referer': `${url.origin}/sess-bin/timepro.cgi?tmenu=iframe&smenu=sysconf_misc`,
-                    'Connection': 'keep-alive'
+                    'Referer': `${url.origin}/sess-bin/timepro.cgi?tmenu=iframe&smenu=sysconf_misc`
                 }
             }, body);
-
-        } catch (e) {
-            this.log.error('💻 재부팅 명령 전송 실패:', e.message);
-        }
+        } catch (e) { this.log.error('💻 재부팅 명령 전송 실패'); }
     }
 }
